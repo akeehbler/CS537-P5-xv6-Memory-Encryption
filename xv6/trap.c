@@ -36,6 +36,7 @@ idtinit(void)
 void
 trap(struct trapframe *tf)
 {
+  int retval;
   if(tf->trapno == T_SYSCALL){
     if(myproc()->killed)
       exit();
@@ -78,17 +79,16 @@ trap(struct trapframe *tf)
     lapiceoi();
     break;
   case T_PGFLT:
-    //TODO
-    /*
-    rcr2 gets the virtual address that triggered the page fault
-    decrypt would just need to be xoring and setting PTE_P and clearing PTE_E
-    retval = decrypt(rcr2())
-    if(!retval)
-      exit()
-    else
-      do something else
-    */
-    break;
+    retval = decrypt((char*)rcr2());
+    // Decryption was successful
+    if(retval == 0){
+      //TODO: Ta said to return from trap, I think you just call return?
+      return;
+      break;
+    }
+    // Otherwise there was an actual pagefault
+    //TODO: TA said to just continue into the deafult if it is an actual pagefault I think that just means don't have a break?
+    //TODO: could have some if statements here to catch if it was -1 or -2 for debugging 
   //PAGEBREAK: 13
   default:
     if(myproc() == 0 || (tf->cs&3) == 0){

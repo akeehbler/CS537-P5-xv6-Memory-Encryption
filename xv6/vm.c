@@ -268,7 +268,8 @@ deallocuvm(pde_t *pgdir, uint oldsz, uint newsz)
     pte = walkpgdir(pgdir, (char*)a, 0);
     if(!pte)
       a = PGADDR(PDX(a) + 1, 0, 0) - PGSIZE;
-    else if((*pte & PTE_P) != 0){
+    //TODO: Changed this to include PTE_E
+    else if((*pte & (PTE_P | PTE_E)) != 0){
       pa = PTE_ADDR(*pte);
       if(pa == 0)
         panic("kfree");
@@ -291,6 +292,7 @@ freevm(pde_t *pgdir)
     panic("freevm: no pgdir");
   deallocuvm(pgdir, KERNBASE, 0);
   for(i = 0; i < NPDENTRIES; i++){
+    //TODO: Might need to change this to have PTE_E in it, not sure since not pte
     if(pgdir[i] & PTE_P){
       char * v = P2V(PTE_ADDR(pgdir[i]));
       kfree(v);
@@ -328,7 +330,7 @@ copyuvm(pde_t *pgdir, uint sz)
     if((pte = walkpgdir(pgdir, (void *) i, 0)) == 0)
       panic("copyuvm: pte should exist");
     //TODO: Probably want to have (PTE_P | PTE_E)
-    if(!(*pte & PTE_P))
+    if(!(*pte & (PTE_P | PTE_E)))
       panic("copyuvm: page not present");
     pa = PTE_ADDR(*pte);
     flags = PTE_FLAGS(*pte);
@@ -356,7 +358,7 @@ uva2ka(pde_t *pgdir, char *uva)
 
   pte = walkpgdir(pgdir, uva, 0);
   // Changed to (PTE_P | PTE_E)
-  if((*pte & (PTE_P | PTE_E) == 0)
+  if((*pte & (PTE_P | PTE_E)) == 0)
     return 0;
   if((*pte & PTE_U) == 0)
     return 0;
@@ -418,48 +420,104 @@ int mencrypt(char *virtual_addr, int len){
   for(int i = 0; i < len; i++){
     // TODO: Maybe do the additon outside of the PGROUNDDOWN, don't think it matters though
     char *alignedAddr = (char*)PGROUNDDOWN(((uint)virtual_addr) + len*PGSIZE);
-    char *kernalAddr = uva2ka(myproc()->pgdir, alignedAddr);
-    if(kernalAddr == 0){
+    char *kernelAddr = uva2ka(myproc()->pgdir, alignedAddr);
+    if(kernelAddr == 0){
       return -1;
     }
   }
   // Now do the encryption/decrypt
   for(int i = 0; i < len; i++){
     // TODO: Maybe do the additon outside of the PGROUNDDOWN, don't think it matters though
+		// align the requested VA to get the VA that the page starts at
     char *alignedAddr = (char*)PGROUNDDOWN(((uint)virtual_addr) + len*PGSIZE);
-    char *kernalAddr = uva2ka(myproc()->pgdir, alignedAddr);
-    pte = walkpgdir(myproc()->pgdir, uva, 0);
-    // Do access to kernalAddr here, only do PTE_E/ PTE_P stuff if it wasn't already encrypted
-    // Clear the PTE_P bit
+		// convert the UVA (user virtual address) to the corresponding KVA (kernel virtual address)
+    char *kernelAddr = uva2ka(myproc()->pgdir, alignedAddr);
+
+    //Pretty sure this has to be alignedAddr not kernelAddr
+    pte = walkpgdir(myproc()->pgdir, alignedAddr, 0);
+
+		if (!((*pte & PTE_E) == 0)) {
+			// move on if its already encrypted
+    	continue;
+		}
+    
+		// Clear the PTE_P bit
     *pte = *pte & ~PTE_P;
     // Set the PTE_E bit
     *pte = *pte | PTE_E;
-    // D
 
+		// Encrypt all bits on that page
+		for (int j = 0; j < PGSIZE; j++) {
+			*(kernelAddr + j) ^= 0xFF;
+		} 
   }
 
   // If we did modifications to any pte, then flush the TLB
-  
   switchuvm(myproc());
   return 0;
 }
 
 /*
 * Returns -1 when entries is NULL
+* Returns the number of elements filled in entries 
 */
 int getpgtable(struct pt_entry *entries, int num){
   // Check if entries is null
-  if (entries = 0){
-    return -1
+  //TODO: Need to use proc-sz here to get the top user page
+  //Idea: Start with highest virtual addr in this proc and slide that pointer to 0
+  if (entries == 0){
+    return -1;
   }
+  int numFilled = 0;
+  
+  /*
+  for(int i = 0; i < )
+
+  */
+  return numFilled;
+}
+/*
+* Returns 0 on success, -1 on error 
+*/
+int dump_rawphymem(uint physical_addr, char *buffer){
+  //TODO: TA said using copyout would make this like 2 lines of code? 316 discussion material
+  // Null buffer check
+  if(buffer == 0){
+    return -1;
+  }
+  // char *alignedAddr = (char*)PGROUNDDOWN(physcial_addr);
+  // somehow have to call copyout
   return 1;
 }
-
-int dump_rawphymem(uint physical_addr, char* buffer){
-  return 1;
+/*
+* Return 0 on success
+* Return other values based on other information
+*/
+int decrypt(char *uva){
+  pte_t *pte;
+  char *alignedAddr = (char*)PGROUNDDOWN(((uint)uva));
+  char *kernelAddr = uva2ka(myproc()->pgdir, alignedAddr);
+  //This means that PTE_U == 0 or PTE_E and PTE_P both == 0
+  if(kernelAddr == 0){
+    return -1;
+  }
+  pte = walkpgdir(myproc()->pgdir, alignedAddr, 0);
+  //Do decryption if PTE_E == 1 && PTE_P == 0 ( could just check PTE_E but this is more robust)
+  if(!((*pte & PTE_E) == 0) && ((*pte & PTE_P) == 0)){
+    // Set the PTE_P bit
+    *pte = *pte | PTE_P;
+    // Clear the PTE_E bit
+    *pte = *pte & ~PTE_E;
+    // Decrypt all bits on that page
+		for (int i = 0; i < PGSIZE; i++) {
+			*(kernelAddr + i) ^= 0xFF;
+		}
+    //Success
+    return 0; 
+  }
+  // Shouldn't get here but if we do we know we have some error in our logic for this function
+  return -2;
 }
-//Add in the decrypt function her, TA said to put it in vm.c and keep trap.c simple
-
 //PAGEBREAK!
 // Blank page.
 //PAGEBREAK!
